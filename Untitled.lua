@@ -1,0 +1,292 @@
+--// Services
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local humanoid = character:WaitForChild("Humanoid")
+local rootPart = character:WaitForChild("HumanoidRootPart")
+
+-- Reconnect on respawn
+player.CharacterAdded:Connect(function(char)
+	character = char
+	humanoid = character:WaitForChild("Humanoid")
+	rootPart = character:WaitForChild("HumanoidRootPart")
+
+	humanoid.Died:Connect(function()
+		stopFly()
+		noclip = false
+	end)
+end)
+
+--// GUI Setup
+local gui = Instance.new("ScreenGui")
+gui.Name = "ControlPanel"
+gui.ResetOnSpawn = false
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("ScrollingFrame")
+frame.Size = UDim2.new(0, 370, 0, 400)
+frame.CanvasSize = UDim2.new(0, 0, 0, 600)
+frame.Position = UDim2.new(0, 20, 0, 20)
+frame.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+frame.ScrollBarThickness = 8
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+local layout = Instance.new("UIListLayout", frame)
+layout.Padding = UDim.new(0, 10)
+layout.SortOrder = Enum.SortOrder.LayoutOrder
+
+local function createLabel(text)
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, -20, 0, 30)
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.Font = Enum.Font.SourceSansBold
+	label.TextSize = 22
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Parent = frame
+	return label
+end
+
+--// Slider
+local function createSlider(name, min, max, default, callback)
+	local label = createLabel(name .. ": " .. default)
+	local slider = Instance.new("Frame")
+	slider.Size = UDim2.new(1, -20, 0, 25)
+	slider.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+	slider.BorderSizePixel = 0
+	slider.Parent = frame
+
+	local fill = Instance.new("Frame", slider)
+	fill.Size = UDim2.new((default - min) / (max - min), 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+	fill.BorderSizePixel = 0
+
+	local handle = Instance.new("TextButton", slider)
+	handle.Size = UDim2.new(0, 20, 1, 0)
+	handle.Position = fill.Size
+	handle.BackgroundColor3 = Color3.fromRGB(0, 120, 255)
+	handle.Text = ""
+
+	local dragging = false
+
+	local function update(inputX)
+		local relX = math.clamp(inputX - slider.AbsolutePosition.X, 0, slider.AbsoluteSize.X)
+		local val = math.floor((relX / slider.AbsoluteSize.X) * (max - min) + min + 0.5)
+		fill.Size = UDim2.new((val - min) / (max - min), 0, 1, 0)
+		handle.Position = fill.Size
+		label.Text = name .. ": " .. val
+		callback(val)
+	end
+
+	handle.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = true
+		end
+	end)
+
+	UserInputService.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+			dragging = false
+		end
+	end)
+
+	UserInputService.InputChanged:Connect(function(input)
+		if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+			update(input.Position.X)
+		end
+	end)
+end
+
+--// Toggle
+local function createToggle(labelText, default, callback)
+	local toggle = Instance.new("TextButton")
+	toggle.Size = UDim2.new(1, -20, 0, 35)
+	toggle.BackgroundColor3 = default and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
+	toggle.TextColor3 = Color3.new(1, 1, 1)
+	toggle.Font = Enum.Font.SourceSansBold
+	toggle.TextSize = 22
+	toggle.Text = labelText .. (default and " ON" or " OFF")
+	toggle.Parent = frame
+
+	local enabled = default
+	toggle.MouseButton1Click:Connect(function()
+		enabled = not enabled
+		toggle.BackgroundColor3 = enabled and Color3.fromRGB(0, 170, 0) or Color3.fromRGB(170, 0, 0)
+		toggle.Text = labelText .. (enabled and " ON" or " OFF")
+		callback(enabled)
+	end)
+end
+
+--// Feature Vars
+local flySpeed = 50
+local flying = false
+local infJump = false
+local noclip = false
+local teamCheck = false
+local espEnabled = false
+
+--// Movement Input
+local keys = {W = false, A = false, S = false, D = false, Space = false, Shift = false}
+UserInputService.InputBegan:Connect(function(i, g)
+	if g then return end
+	local k = i.KeyCode
+	if keys[k.Name] ~= nil then keys[k.Name] = true end
+end)
+UserInputService.InputEnded:Connect(function(i)
+	local k = i.KeyCode
+	if keys[k.Name] ~= nil then keys[k.Name] = false end
+end)
+
+--// Fly
+local flyBV, flyBG
+function startFly()
+	if not rootPart then return end
+	flyBV = Instance.new("BodyVelocity")
+	flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	flyBV.P = 1250
+	flyBV.Parent = rootPart
+
+	flyBG = Instance.new("BodyGyro")
+	flyBG.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+	flyBG.P = 3000
+	flyBG.Parent = rootPart
+
+	humanoid.PlatformStand = true
+end
+function stopFly()
+	if flyBV then flyBV:Destroy() flyBV = nil end
+	if flyBG then flyBG:Destroy() flyBG = nil end
+	humanoid.PlatformStand = false
+end
+
+--// Noclip Handler
+RunService.Stepped:Connect(function()
+	if noclip and character then
+		for _, part in pairs(character:GetDescendants()) do
+			if part:IsA("BasePart") and part.CanCollide then
+				part.CanCollide = false
+			end
+		end
+	end
+end)
+
+--// Infinite Jump
+UserInputService.JumpRequest:Connect(function()
+	if infJump and humanoid then
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+end)
+
+--// Fly Movement
+RunService.Heartbeat:Connect(function()
+	if flying and rootPart then
+		local cam = workspace.CurrentCamera
+		local dir = Vector3.new(0, 0, 0)
+		if keys.W then dir += cam.CFrame.LookVector end
+		if keys.S then dir -= cam.CFrame.LookVector end
+		if keys.A then dir -= cam.CFrame.RightVector end
+		if keys.D then dir += cam.CFrame.RightVector end
+		if keys.Space then dir += Vector3.yAxis end
+		if keys.Shift then dir -= Vector3.yAxis end
+
+		if flyBV then
+			if dir.Magnitude > 0 then
+				flyBV.Velocity = dir.Unit * flySpeed
+			else
+				flyBV.Velocity = Vector3.zero
+			end
+		end
+		if flyBG then flyBG.CFrame = cam.CFrame end
+	end
+end)
+
+--// Sliders & Toggles
+createSlider("WalkSpeed", 1, 1000, 16, function(val) humanoid.WalkSpeed = val end)
+createSlider("JumpPower", 1, 1000, 50, function(val) humanoid.JumpPower = val end)
+createSlider("FlySpeed", 1, 1000, 50, function(val) flySpeed = val end)
+createToggle("Infinite Jump", false, function(val) infJump = val end)
+createToggle("Fly", false, function(val) flying = val if val then startFly() else stopFly() end end)
+createToggle("NoClip", false, function(val) noclip = val end)
+createToggle("ESP", false, function(val) espEnabled = val end)
+createToggle("Team Check", false, function(val) teamCheck = val end)
+
+--// FPS-Safe ESP
+local espDrawings = {}
+
+local function createESP(plr)
+	local box = Drawing.new("Square")
+	box.Color = Color3.fromRGB(255, 0, 0)
+	box.Thickness = 1.5
+	box.Filled = false
+	box.Visible = false
+
+	local name = Drawing.new("Text")
+	name.Color = Color3.new(1,1,1)
+	name.Size = 14
+	name.Center = true
+	name.Outline = true
+	name.Visible = false
+
+	espDrawings[plr] = {box = box, name = name}
+end
+
+for _, p in pairs(Players:GetPlayers()) do
+	if p ~= player then createESP(p) end
+end
+Players.PlayerAdded:Connect(function(p)
+	if p ~= player then createESP(p) end
+end)
+
+Players.PlayerRemoving:Connect(function(p)
+	if espDrawings[p] then
+		espDrawings[p].box:Remove()
+		espDrawings[p].name:Remove()
+		espDrawings[p] = nil
+	end
+end)
+
+RunService.Heartbeat:Connect(function()
+	if not espEnabled then
+		for _, v in pairs(espDrawings) do
+			v.box.Visible = false
+			v.name.Visible = false
+		end
+		return
+	end
+
+	for plr, esp in pairs(espDrawings) do
+		local char = plr.Character
+		if not char or not char:FindFirstChild("HumanoidRootPart") or plr == player then
+			esp.box.Visible = false
+			esp.name.Visible = false
+			continue
+		end
+
+		if teamCheck and plr.Team == player.Team then
+			esp.box.Visible = false
+			esp.name.Visible = false
+			continue
+		end
+
+		local hrp = char:FindFirstChild("HumanoidRootPart")
+		local pos, onScreen = workspace.CurrentCamera:WorldToViewportPoint(hrp.Position)
+		if onScreen then
+			local scale = 60 / (pos.Z)
+			esp.box.Size = Vector2.new(30, 60) * scale
+			esp.box.Position = Vector2.new(pos.X - esp.box.Size.X/2, pos.Y - esp.box.Size.Y/2)
+			esp.box.Visible = true
+
+			esp.name.Position = Vector2.new(pos.X, pos.Y - esp.box.Size.Y/2 - 12)
+			esp.name.Text = plr.Name
+			esp.name.Visible = true
+		else
+			esp.box.Visible = false
+			esp.name.Visible = false
+		end
+	end
+end)
